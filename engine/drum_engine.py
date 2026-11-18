@@ -24,6 +24,7 @@ modelo y misma logica de unir hh + ride + crash en un unico stem "cymbals".
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import re
@@ -46,7 +47,7 @@ CUDA_INDEXES = ["cu130", "cu129", "cu128", "cu126", "cu124", "cu118"]
 # Version minima de "CUDA Version" (nvidia-smi) que necesita cada rueda.
 CUDA_MIN_DRIVER = {"cu130": (13, 0), "cu129": (12, 9), "cu128": (12, 8),
                    "cu126": (12, 6), "cu124": (12, 4), "cu118": (11, 8)}
-EXTRA_DEPS = ["soundfile", "librosa", "numpy"]
+EXTRA_DEPS = ["soundfile", "librosa", "numpy", "audioread", "resampy", "pydub", "imageio-ffmpeg"]
 
 
 def emit(tag: str, payload: str = "") -> None:
@@ -208,10 +209,27 @@ def cmd_separate(args) -> int:
     sys.stderr = ProgressTee(passes=1)   # antes de crear el Separator (su logger captura stderr)
     try:
         try:
-            import torch
-            import soundfile as sf
-            import numpy as np
-            from audio_separator.separator import Separator
+            # Autoreparacion: si falta un modulo suelto (p. ej. 'audioread'), lo instala y reintenta.
+            for _attempt in range(6):
+                try:
+                    import torch
+                    import soundfile as sf
+                    import numpy as np
+                    from audio_separator.separator import Separator
+                    break
+                except ModuleNotFoundError as mnf:
+                    mod = (mnf.name or "").split(".")[0]
+                    if not mod or _attempt == 5 or mod in ("torch", "audio_separator"):
+                        raise
+                    pkg = {"soundfile": "soundfile", "cv2": "opencv-python-headless",
+                           "yaml": "pyyaml", "sklearn": "scikit-learn"}.get(mod, mod)
+                    emit("STATUS", f"Falta el modulo '{mod}': instalandolo...")
+                    real_stderr.write("")
+                    rc = subprocess.call([sys.executable, "-m", "pip", "install", pkg],
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    if rc != 0:
+                        raise
+                    importlib.invalidate_caches()
         except Exception as exc:
             sys.stderr = real_stderr
             emit("ERROR", f"Faltan dependencias (audio-separator/torch/soundfile): {exc}")
@@ -421,6 +439,13 @@ def cmd_setup(args) -> int:
     if run_logged([py, "-m", "pip", "install", *EXTRA_DEPS]) != 0:
         emit("ERROR", "No se pudieron instalar las dependencias.")
         return 23
+    # ffmpeg (para mp3/m4a): si no esta en el sistema, usa el de imageio-ffmpeg dentro del venv
+    if not shutil.which("ffmpeg"):
+        out = subprocess.run([py, "-c", "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"],
+                             capture_output=True, text=True)
+        exe = out.stdout.strip()
+        if out.returncode == 0 and os.path.isfile(exe):
+            shutil.copyfile(exe, os.path.join(os.path.dirname(py), "ffmpeg.exe" if os.name == "nt" else "ffmpeg"))
     # audio-separator[gpu] puede arrastrar un torch distinto: si perdio CUDA, avisar
     if gpu_ok and not torch_has_cuda(py):
         emit("STATUS", "Aviso: PyTorch perdio CUDA al instalar audio-separator; se usara la CPU.")
@@ -431,6 +456,8 @@ def cmd_setup(args) -> int:
 
 # --------------------------------------------------------------------------
 def main() -> int:
+    # el ffmpeg.exe que se deja junto al python del venv debe ser visible para audio-separator
+    os.environ["PATH"] = os.path.dirname(sys.executable) + os.pathsep + os.environ.get("PATH", "")
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)

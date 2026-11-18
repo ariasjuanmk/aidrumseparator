@@ -1,4 +1,4 @@
-# AI Drum Separation (prototipo 0.1.1, solo Windows)
+# AI Drum Separation (prototipo 0.1.2, solo Windows)
 
 Plugin VST3 que separa una **pista de batería** en 4 stems — **Kick, Snare, Toms, Cymbals** — con el
 modelo DrumSep (MDX23C, vía `audio-separator`) y los reproduce sincronizados con el DAW.
